@@ -100,7 +100,7 @@ CONFIG_ENABLE_COLOR = 1
 CONFIG_DISPLAY_DISASSEMBLY_BYTES = 1
 CONFIG_DISASSEMBLY_LINE_COUNT = 8
 CONFIG_USE_CUSTOM_DISASSEMBLY_FORMAT = 1
-CONFIG_DISPLAY_STACK_WINDOW = 0
+CONFIG_DISPLAY_STACK_WINDOW = 1
 CONFIG_DISPLAY_FLOW_WINDOW = 1
 CONFIG_ENABLE_REGISTER_SHORTCUTS = 1
 CONFIG_DISPLAY_DATA_WINDOW = 0
@@ -119,7 +119,7 @@ CYAN = 6
 WHITE = 7
 
 COLOR_REGNAME = GREEN
-COLOR_REGVAL = BLACK
+COLOR_REGVAL = WHITE
 COLOR_REGVAL_MODIFIED  = RED
 COLOR_SEPARATOR = BLUE
 COLOR_CPUFLAGS = RED
@@ -188,7 +188,8 @@ old_arm_cpsr = 0
 arm_type = "thumbv7-apple-ios"
 
 GlobalListOutput = []
-
+is_map_loaded = False
+mappings = []
 Int3Dictionary = {}
 
 crack_cmds = []
@@ -243,6 +244,9 @@ def __lldb_init_module(debugger, internal_dict):
     lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.dq dq", res)
     lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.DumpInstructions u", res)
     lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.findmem findmem", res)
+    lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.vmmap vmmap", res)
+    lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.reloadmap reloadmap", res)
+    lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.telescrope telescrope", res)
     #
     # Settings related commands
     #
@@ -251,6 +255,7 @@ def __lldb_init_module(debugger, internal_dict):
     lldb.debugger.GetCommandInterpreter().HandleCommand("command script add -f lldbinit.contextcodesize contextcodesize", res)
     # a few settings aliases
     lldb.debugger.GetCommandInterpreter().HandleCommand("command alias enablesolib enable solib", res)
+    lldb.debugger.GetCommandInterpreter().HandleCommand("command alias stack telescrope 0", res)
     lldb.debugger.GetCommandInterpreter().HandleCommand("command alias disablesolib disable solib", res)
     lldb.debugger.GetCommandInterpreter().HandleCommand("command alias enableaslr enable aslr", res)
     lldb.debugger.GetCommandInterpreter().HandleCommand("command alias disableaslr disable aslr", res)
@@ -1904,7 +1909,148 @@ Note: expressions supported, do not use spaces between operators.
     result.PutCString("".join(GlobalListOutput))
     result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
+def telescrope(debugger, command, result, dict):
+    ''' Display hex dump in quad values. Use \'dq help\' for more information.'''
+    help = """
+Display memory hex dump in quad word length.
+
+Syntax: dq [<address>]
+
+Note: if no address specified it will dump current instruction pointer address.
+Note: expressions supported, do not use spaces between operators.
+"""
+
+    global GlobalListOutput
+    GlobalListOutput = []
+
+    cmd = command.split()
+    
+    siz=0x30
+
+    if len(cmd) == 0:
+        dump_addr = get_current_sp()
+        if dump_addr == 0:
+            print "[-] error: invalid current address."
+            return
+    elif len(cmd) >= 1:
+        if cmd[0] == "help":
+            print help
+            return        
+        if(cmd[0]=='0'):
+            dump_addr = get_current_sp()
+        else:
+            dump_addr = evaluate(cmd[0])
+        if dump_addr == None:
+            print "[-] error: invalid input address value."
+            print ""
+            print help
+            return
+        if(len(cmd)!=1):
+            try:
+                siz=int(cmd[1],16)
+            except:
+                siz=int(cmd[1])
+            if(siz%8):
+                siz=((siz>>3)<<3)+8
+            if siz>0x10000:
+                print"[-] error: size too big!"
+
+    err = lldb.SBError()
+    while siz != 0:
+        membuff = get_process().ReadMemory(dump_addr, siz, err)
+        if err.Success() == False and siz == 0:
+            output(str(err))
+            result.PutCString("".join(GlobalListOutput))
+            return
+        if err.Success() == True:
+            break
+        siz = siz - 8
+    membuff = membuff + "\x00" * (0x100-siz)
+    if err.Success() == False:
+        output(str(err))
+        result.PutCString("".join(GlobalListOutput))
+        return
+    print(hexdump(dump_addr,membuff," ",8,siz>>3))
+
+def stack(debugger, command, result, dict):
+    ''' Display hex dump in quad values. Use \'dq help\' for more information.'''
+    help = """
+Display memory hex dump in quad word length.
+
+Syntax: dq [<address>]
+
+Note: if no address specified it will dump current instruction pointer address.
+Note: expressions supported, do not use spaces between operators.
+"""
+
+    global GlobalListOutput
+    GlobalListOutput = []
+
+    cmd = command.split()
+
+    if len(cmd) == 0:
+        dump_addr = get_current_pc()
+        if dump_addr == 0:
+            print "[-] error: invalid current address."
+            return
+    elif len(cmd) == 1:
+        if cmd[0] == "help":
+           print help
+           return        
+        dump_addr = evaluate(cmd[0])
+        if dump_addr == None:
+            print "[-] error: invalid input address value."
+            print ""
+            print help
+            return
+    else:
+        print "[-] error: please insert a start address."
+        print ""
+        print help
+        return
+
 def hexdump(addr, chars, sep, width, lines=5):
+    l = []
+    line_count = 0
+    offset = 0
+    while chars:
+        if line_count >= lines:
+            break
+        line = chars[:width]
+        chars = chars[width:]
+        line = line.ljust( width, '\000' )
+        arch = get_arch()
+        if get_pointer_size() == 4:
+            szaddr = "0x%.08X" % addr
+            l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % ord(c) for c in line ), sep, quotechars( line )))
+        else:
+            szaddr = "0x%.016lX" % addr
+            addrp=parseAddr(addr,8)
+            content_addr=struct.unpack("<Q",line)
+            contentp=parseAddr(content_addr[0])
+            format_str="%04d| %s : %s" % (offset,addrp[0], contentp[0])
+            if(contentp[3]!=0):
+                format_str+=contentp[3]
+            elif(contentp[2]==1):
+                tmp=contentp[1]
+                format_str+=" --> "
+                while(True):
+                    format_str+="%s"%(tmp[0])
+                    if(tmp[2]==1):
+                        format_str+=" --> "
+                        tmp=tmp[1]
+                        continue
+                    else:
+                        if(tmp[3]!=0):
+                            format_str+=contentp[3]
+                        break
+            l.append(format_str)
+        offset+= width
+        addr += width
+        line_count = line_count + 1
+    return "\n".join(l)
+
+def stackdump(addr, chars, sep, width, lines=5):
     l = []
     line_count = 0
     while chars:
@@ -1916,9 +2062,10 @@ def hexdump(addr, chars, sep, width, lines=5):
         arch = get_arch()
         if get_pointer_size() == 4:
             szaddr = "0x%.08X" % addr
+            l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % ord(c) for c in line ), sep, quotechars( line )))
         else:
             szaddr = "0x%.016lX" % addr
-        l.append("\033[1m%s :\033[0m %s%s \033[1m%s\033[0m" % (szaddr, sep.join( "%02X" % ord(c) for c in line ), sep, quotechars( line )))
+            l.append("\033[34m%s :\033[0m %s \033[1m%s\033[0m" % (szaddr, "%016X %016X" % struct.unpack("<QQ",line),quotechars( line )))
         addr += 0x10
         line_count = line_count + 1
     return "\n".join(l)
@@ -1933,7 +2080,142 @@ def quotechars( chars ):
             data += "."
     return data
 
+def rmap():
+    global mappings
+    global is_map_loaded
+
+    mappings=[]    
+
+    process = get_process()
+    pid = process.GetProcessID()
+    output_data = subprocess.check_output(["/usr/bin/vmmap","-interleaved","%d" % pid])
+    lines = output_data.split("\n")
+    line2 = []
+    phase1=0
+    for i in lines:
+        if(phase1==0):
+            if("START - END" not in i):
+                continue
+            else:
+                phase1=1
+        elif(i==""):
+            break
+        else:
+            mappings.append([int(i[23:23+16],16),int(i[23+17:23+33],16),i[87:90],i[108:]])
+    
+    is_map_loaded=True
+
+def reloadmap(debugger, command, result, dict):
+    rmap()
+
+def wrapColor(s,color):
+    if(color==RED):
+        return "\033[31m%s\033[0m" % s
+    elif(color==GREEN):
+        return "\033[32m%s\033[0m" % s
+    elif(color==BLUE):
+        return "\033[34m%s\033[0m" % s
+    return s
+
+def parseAddr(addr,depth=1):
+    if(depth==9):
+        return None
+    global is_map_loaded
+    global mappings
+    if(is_map_loaded==False):
+        rmap()
+
+    color=WHITE
+    for i in mappings:
+        if addr>=i[1]:
+            continue
+        if i[0]<=addr and addr<i[1]:
+            if('x' in i[2]):
+                color=RED
+            elif('w' in i[2]):
+                color=BLUE
+            elif('r' in i[2]):
+                color=GREEN
+            break
+        break
+    res=[0,0,0,0]
+    res[0]=wrapColor(hex(addr),color)
+    if(color==RED):
+        #print("RED")
+        tres = lldb.SBCommandReturnObject()
+        lldb.debugger.GetCommandInterpreter().HandleCommand("disassemble --start-address=" + hex(addr) + " --count=1", tres)
+        data = tres.GetOutput()
+        data =data.split("\n")
+        code = data[1]
+        if("@" not in data[0]):
+            code=data[0]
+        res[3]="(%s )"%(code.split(":")[1])
+
+    elif(color==GREEN or color==BLUE):
+        err = lldb.SBError()
+        target = get_target()
+        membuff = get_process().ReadMemory(addr, 0x8, err)
+        if err.Success() == False:
+            print "[-] error: Failed to read memory at 0x%x." % stack_addr
+            return
+        if len(membuff) == 0:
+            print "[-] error: not enough bytes read."
+            return
+        nextaddr=struct.unpack("<Q",membuff)[0]    
+        res[1]=parseAddr(nextaddr,depth+1)
+        if(res[1]!=None):
+            res[2]=1
+    else:
+        s=struct.pack("<Q",addr)
+        for i in range(8):
+            if(s[i]=='\x00'):
+                s=s[:i-1]
+                break
+        if(len(s)*2==len(hex(addr)[2:]) and s.isalnum()):
+            res[3]="(%s)"%s
+    return res
+
+def vmmap(debugger, command, result, dict):
+    '''Display memory mapping of the current process'''
+    help="""
+    Syntax: vmmap [<address>]
+    """
+    global is_map_loaded
+    global mappings
+    global GlobalListOutput
+    if(is_map_loaded==False):
+        rmap()
+    GlobalListOutput=[]
+    
+    format_str="  %018X-%016X    %s   %s\n"
+    if(len(command)!=0):
+        val=0
+        try:
+            val=int(command,16)
+        except:
+            val=int(command)
+
+        for i in mappings:
+            beg=i[0]
+            end=i[1]
+            if(val>=beg and val<end):
+                print(format_str%tuple(i))
+                return
+
+        print("Couldn't find mapping..")
+        return
+    for i in mappings:
+        if('rwx'==i[2]):
+            color(RED)
+            output(format_str%tuple(i))
+            color_reset()
+        else:
+            output(format_str%tuple(i))
+    result.PutCString("".join(GlobalListOutput))
+    result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
+
 # XXX: help
+
 def findmem(debugger, command, result, dict):
     '''Search memory'''
     help == """
@@ -2310,9 +2592,11 @@ Where value can be a single value or an expression.
 
     cmd = command.split()
     if len(cmd) == 0:
-        print "[-] error: command requires arguments."
-        print ""
-        print help
+        #print("FUCK")
+        print "$%s : %s"% (register,get_frame().reg[register].value)
+        #print "[-] error: command requires arguments."
+        #print ""
+        #print help
         return
 
     if cmd[0] == "help":
@@ -2942,7 +3226,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rax))
+    output("0x%.016lx" % (rax))
     old_rax = rax
     
     color(COLOR_REGNAME)
@@ -2951,7 +3235,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rbx))
+    output("0x%.016lx" % (rbx))
     old_rbx = rbx
     
     color(COLOR_REGNAME)
@@ -2960,7 +3244,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rbp))
+    output("0x%.016lx" % (rbp))
     old_rbp = rbp
     
     color(COLOR_REGNAME)
@@ -2969,7 +3253,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rsp))
+    output("0x%.016lx" % (rsp))
     old_rsp = rsp
     
     output("  ")
@@ -2987,7 +3271,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rdi))
+    output("0x%.016lx" % (rdi))
     old_rdi = rdi
     
     color(COLOR_REGNAME)
@@ -2996,7 +3280,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rsi))
+    output("0x%.016lx" % (rsi))
     old_rsi = rsi
     
     color(COLOR_REGNAME)
@@ -3005,7 +3289,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rdx))
+    output("0x%.016lx" % (rdx))
     old_rdx = rdx
     
     color(COLOR_REGNAME)
@@ -3014,7 +3298,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rcx))
+    output("0x%.016lx" % (rcx))
     old_rcx = rcx
     
     color(COLOR_REGNAME)
@@ -3023,7 +3307,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (rip))
+    output("0x%.016lx" % (rip))
     old_rip = rip
     output("\n")
         
@@ -3033,7 +3317,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r8))
+    output("0x%.016lx" % (r8))
     old_r8 = r8
     
     color(COLOR_REGNAME)
@@ -3042,7 +3326,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r9))
+    output("0x%.016lx" % (r9))
     old_r9 = r9
     
     color(COLOR_REGNAME)
@@ -3051,7 +3335,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r10))
+    output("0x%.016lx" % (r10))
     old_r10 = r10
     
     color(COLOR_REGNAME)
@@ -3060,7 +3344,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r11))
+    output("0x%.016lx" % (r11))
     old_r11 = r11
     
     color(COLOR_REGNAME)
@@ -3069,7 +3353,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r12))
+    output("0x%.016lx" % (r12))
     old_r12 = r12
     
     output("\n")
@@ -3080,7 +3364,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r13))
+    output("0x%.016lx" % (r13))
     old_r13 = r13
     
     color(COLOR_REGNAME)
@@ -3089,7 +3373,7 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r14))
+    output("0x%.016lx" % (r14))
     old_r14 = r14
     
     color(COLOR_REGNAME)
@@ -3098,9 +3382,9 @@ def reg64():
         color(COLOR_REGVAL)
     else:
         color(COLOR_REGVAL_MODIFIED)
-    output("0x%.016lX" % (r15))
+    output("0x%.016lx" % (r15))
     old_r15 = r15
-    output("\n")
+    #output("\n")
         
     color(COLOR_REGNAME)
     output("  CS:  ")
@@ -4022,7 +4306,7 @@ def display_stack():
         print "[-] error: not enough bytes read."
         return
 
-    output(hexdump(stack_addr, membuff, " ", 16, 4))
+    output(hexdump(stack_addr, membuff, " ", 8, 6))
 
 def display_data():
     '''Hex dump current data window pointer'''
@@ -4209,7 +4493,9 @@ def display_indirect_flow():
             output("\n")
             display_objc()
         output("\n")
-
+        return
+    
+    output("\n")
     return
 #
 # The heart of lldbinit - when lldb stop this is where we land 
@@ -4267,44 +4553,6 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
     color_reset()
     print_registers()
 
-    if CONFIG_DISPLAY_STACK_WINDOW == 1:
-        color(COLOR_SEPARATOR)
-        if is_i386() or is_arm():
-            output("--------------------------------------------------------------------------------")
-        elif is_x64():
-            output("----------------------------------------------------------------------------------------------------------------------")
-        color_bold()
-        output("[stack]\n")
-        color_reset()
-    
-        display_stack()
-        output("\n")
-    if CONFIG_DISPLAY_DATA_WINDOW == 1:
-        color(COLOR_SEPARATOR)
-        if is_i386() or is_arm():
-            output("---------------------------------------------------------------------------------")
-        elif is_x64():
-            output("-----------------------------------------------------------------------------------------------------------------------")
-        color_bold()
-        output("[data]\n")
-        color_reset()
-    
-        display_data()
-        output("\n")
-
-    if CONFIG_DISPLAY_FLOW_WINDOW == 1 and is_x64():
-        color(COLOR_SEPARATOR)
-        if is_i386() or is_arm():
-            output("---------------------------------------------------------------------------------")
-        elif is_x64():
-            output("-----------------------------------------------------------------------------------------------------------------------")
-        color_bold()
-        output("[flow]\n")
-        color_reset()
-
-        display_indirect_flow()
-
-
     color(COLOR_SEPARATOR)
     if is_i386() or is_arm():
         output("---------------------------------------------------------------------------------")
@@ -4340,6 +4588,7 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
     data = res.GetOutput()
     #split lines... and mark currently executed code...
     data = data.split("\n")
+    data = data[0:10]
     #detemine what to hl, as sometimes lldb won't put => into stoped thread... well...
     #need to check if first sym is => or '  ' which means this is name without symol
     #symbols are stored 1st so here we go...
@@ -4371,13 +4620,57 @@ def HandleHookStopOnTarget(debugger, command, result, dict):
         else:
             output(x)
             output("\n")
+    output("\n")
         
     #output(res.GetOutput());
+    """
     color(COLOR_SEPARATOR)
     if get_pointer_size() == 4: #is_i386() or is_arm():
         output("---------------------------------------------------------------------------------------")
     elif get_pointer_size() == 8: #is_x64():
         output("-----------------------------------------------------------------------------------------------------------------------------")
+    output("\n")
+    """
+    if CONFIG_DISPLAY_STACK_WINDOW == 1:
+        color(COLOR_SEPARATOR)
+        if is_i386() or is_arm():
+            output("--------------------------------------------------------------------------------")
+        elif is_x64():
+            output("----------------------------------------------------------------------------------------------------------------------")
+        color_bold()
+        output("[stack]\n")
+        color_reset()
+    
+        display_stack()
+        output("\n")
+
+    if CONFIG_DISPLAY_DATA_WINDOW == 1:
+        color(COLOR_SEPARATOR)
+        if is_i386() or is_arm():
+            output("---------------------------------------------------------------------------------")
+        elif is_x64():
+            output("-----------------------------------------------------------------------------------------------------------------------")
+        color_bold()
+        output("[data]\n")
+        color_reset()
+    
+        display_data()
+        output("\n")
+
+    if CONFIG_DISPLAY_FLOW_WINDOW == 1 and is_x64():
+        color(COLOR_SEPARATOR)
+        if is_i386() or is_arm():
+            output("---------------------------------------------------------------------------------")
+        elif is_x64():
+            output("-----------------------------------------------------------------------------------------------------------------------")
+        color_bold()
+        output("[flow]\n")
+        #color_reset()
+        color(RED)
+        display_indirect_flow()
+
+    color(COLOR_SEPARATOR)
+    output("-----------------------------------------------------------------------------------------------------------------------")
     color_reset()
     #output("\n");
     
