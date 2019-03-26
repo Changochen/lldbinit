@@ -221,7 +221,7 @@ def __lldb_init_module(debugger, internal_dict):
     
     # settings
     lldb.debugger.GetCommandInterpreter().HandleCommand("settings set target.x86-disassembly-flavor intel", res)
-    lldb.debugger.GetCommandInterpreter().HandleCommand("settings set prompt \"(lldbinit) \"", res)
+    lldb.debugger.GetCommandInterpreter().HandleCommand("settings set prompt \"(neodb)\"", res)
     #lldb.debugger.GetCommandInterpreter().HandleCommand("settings set prompt \"\033[01;31m(lldb) \033[0m\"", res);
     lldb.debugger.GetCommandInterpreter().HandleCommand("settings set stop-disassembly-count 0", res)
 
