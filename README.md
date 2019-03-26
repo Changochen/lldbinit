@@ -29,9 +29,11 @@ List all implemented commands with 'lldbinitcmds'
 There are some user configurable options on the header. You can also use the enable/disable commands to real time configure some options.
 
 ## Features
-![indirect jmp](images/lldb.png)
+![jmp](images/lldb1.png)
+![stack](images/lldb2.png)
 
 ### Peda like Command
 1. `vmmap`
 2. `telescrope`
 3. `stack`
+4. `More to add...`
