@@ -104,7 +104,7 @@ CONFIG_DISPLAY_STACK_WINDOW = 1
 CONFIG_DISPLAY_FLOW_WINDOW = 1
 CONFIG_ENABLE_REGISTER_SHORTCUTS = 1
 CONFIG_DISPLAY_DATA_WINDOW = 0
-
+printable='0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
 # removes the offsets and modifies the module name position
 # reference: https://lldb.llvm.org/formats.html
 CUSTOM_DISASSEMBLY_FORMAT = "\"{${function.initial-function}{${function.name-without-args}} @ {${module.file.basename}}:\n}{${function.changed}\n{${function.name-without-args}} @ {${module.file.basename}}:\n}{${current-pc-arrow} }${addr-file-or-load}: \""
@@ -197,6 +197,9 @@ crack_cmds_noret = []
 
 All_Registers = [ "rip", "rax", "rbx", "rbp", "rsp", "rdi", "rsi", "rdx", "rcx", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "eip", "eax", "ebx", "ebp", "esp", "edi", "esi", "edx", "ecx" ]
 
+def isprintable(s):
+    return all(c in printable for c in s)
+
 def __lldb_init_module(debugger, internal_dict):
     ''' we can execute commands using debugger.HandleCommand which makes all output to default
     lldb console. With GetCommandinterpreter().HandleCommand() we can consume all output
@@ -221,7 +224,7 @@ def __lldb_init_module(debugger, internal_dict):
     
     # settings
     lldb.debugger.GetCommandInterpreter().HandleCommand("settings set target.x86-disassembly-flavor intel", res)
-    lldb.debugger.GetCommandInterpreter().HandleCommand("settings set prompt \"(neodb)\"", res)
+    lldb.debugger.GetCommandInterpreter().HandleCommand("settings set prompt \"neodb $ \"", res)
     #lldb.debugger.GetCommandInterpreter().HandleCommand("settings set prompt \"\033[01;31m(lldb) \033[0m\"", res);
     lldb.debugger.GetCommandInterpreter().HandleCommand("settings set stop-disassembly-count 0", res)
 
@@ -1910,13 +1913,13 @@ Note: expressions supported, do not use spaces between operators.
     result.SetStatus(lldb.eReturnStatusSuccessFinishResult)
 
 def telescrope(debugger, command, result, dict):
-    ''' Display hex dump in quad values. Use \'dq help\' for more information.'''
+    ''' Display hex dump in quad values. Use \'telescrope help\' for more information.'''
     help = """
-Display memory hex dump in quad word length.
+Display memory.
 
-Syntax: dq [<address>]
+Syntax: telescrope [<address>] [count]
 
-Note: if no address specified it will dump current instruction pointer address.
+Note: if no address specified it will dump current stack pointer address.
 Note: expressions supported, do not use spaces between operators.
 """
 
@@ -2042,7 +2045,8 @@ def hexdump(addr, chars, sep, width, lines=5):
                         continue
                     else:
                         if(tmp[3]!=0):
-                            format_str+=contentp[3]
+                            #format_str+=contentp[3]
+                            format_str+=tmp[3]
                         break
             l.append(format_str)
         offset+= width
@@ -2145,11 +2149,20 @@ def parseAddr(addr,depth=1):
         tres = lldb.SBCommandReturnObject()
         lldb.debugger.GetCommandInterpreter().HandleCommand("disassemble --start-address=" + hex(addr) + " --count=1", tres)
         data = tres.GetOutput()
-        data =data.split("\n")
-        code = data[1]
-        if("@" not in data[0]):
-            code=data[0]
-        res[3]="(%s )"%(code.split(":")[1])
+        if(data!=None):
+            data =data.split("\n")
+            code = data[1]
+            if("@" not in data[0]):
+                code=data[0]
+            res[3]="(%s )"%(code.split(":")[1])
+        else:
+            s=struct.pack("<Q",addr)
+            for i in range(8):
+                if(s[i]=='\x00'):
+                    s=s[:i-1]
+                    break
+            if(len(s)*2==len(hex(addr)[2:]) and isprintable(s)):
+                res[3]="(%s)"%s
 
     elif(color==GREEN or color==BLUE):
         err = lldb.SBError()
@@ -2169,9 +2182,9 @@ def parseAddr(addr,depth=1):
         s=struct.pack("<Q",addr)
         for i in range(8):
             if(s[i]=='\x00'):
-                s=s[:i-1]
+                s=s[:i]
                 break
-        if(len(s)*2==len(hex(addr)[2:]) and s.isalnum()):
+        if(len(s)*2==len(hex(addr)[2:]) and isprintable(s)):
             res[3]="(%s)"%s
     return res
 
